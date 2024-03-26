@@ -1,43 +1,65 @@
 /*
- * Copyright (c) 2016 Intel Corporation
+ * Copyright (c) 2024 Kelly Helmut Lord
  *
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/drivers/gpio.h>
+#include <zephyr/toolchain.h>
+#include <zephyr/device.h>
+#include <zephyr/retention/retention.h>
 
-/* 1000 msec = 1 sec */
-#define SLEEP_TIME_MS   1000
+const struct device *retention = DEVICE_DT_GET(DT_NODELABEL(retention));
 
-/* The devicetree node identifier for the "led0" alias. */
-#define LED0_NODE DT_ALIAS(led0)
+struct time {
+	uint32_t hour;
+	uint32_t minute;
+	uint32_t centisecond;
+};
 
-/*
- * A build error on this line means your board is unsupported.
- * See the sample documentation for information on how to fix this.
- */
-static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+struct k_timer reset_timer;
+extern void reset_timer_handler(struct k_timer *timer_id) {
+	sys_reboot(0);
+}
 
 int main(void)
 {
 	int ret;
+	struct time current_time = {0};
 
-	if (!gpio_is_ready_dt(&led)) {
-		return 0;
+	k_timer_init(&reset_timer, reset_timer_handler, NULL);
+	k_timer_start(&reset_timer, K_SECONDS(10), K_NO_WAIT);
+
+	if (!device_is_ready(retention)) {
+		printk("Retention domain device is not ready\n");
+		return -ENODEV;
 	}
 
-	ret = gpio_pin_configure_dt(&led, GPIO_OUTPUT_ACTIVE);
-	if (ret < 0) {
-		return 0;
+
+	if (retention_is_valid(retention) == 0) {
+		printk("Retention data is not valid\n");
+		ret = retention_clear(retention);
+		if (ret) {
+			printk("Failed to clear retention data\n");
+			return ret;
+		}
 	}
 
 	while (1) {
-		ret = gpio_pin_toggle_dt(&led);
-		if (ret < 0) {
-			return 0;
+
+		ret = retention_read(retention, 0, &current_time, sizeof(current_time));
+		if (ret) {
+			printk("Failed to read retention data\n");
+			return ret;
 		}
-		k_msleep(SLEEP_TIME_MS);
+
+		printk("Current time: %02d:%02d:%02d\n",
+		       current_time.hour, current_time.minute, current_time.centisecond);
+
+		current_time.centisecond++;
+
+		ret = retention_write(retention, 0, &current_time, sizeof(current_time));	
+		k_msleep(100);
 	}
 	return 0;
 }
